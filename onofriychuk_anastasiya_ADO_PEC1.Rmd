@@ -22,6 +22,8 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Resumen
 
+Este estudio trata de estudiar el efecto del alcohol sobre el desarrollo embrionario en relación a TEAF, utilizando como modelo *Danio rerio*. Mediante un análisis de microarrays, se tratará de descubrir qué genes están implicados en estos trastornos en el momento de la gastrulación.
+
 # Introducción y objetivos
 
 ## Presentación del estudio
@@ -228,7 +230,7 @@ Al parecer, menos del 5% de los datos presentan una variabilidad notblemente dif
 
 Para facilitar el estudio, y evitar trabajar con esos genes que, de manera evidente, no aportan información relevante, se realizó un filtrado de los mismos, con la herramienta `genefilter`. Para ello, se han utilizado además los datos de anotación de *D. rerio* de Affymetrix, `zebrafish.db`.
 
-```{r echo=FALSE}
+```{r echo=FALSE, message=FALSE}
 library(genefilter)
 library(zebrafish.db)
 annotation(normData) <- "zebrafish.db"
@@ -256,7 +258,7 @@ Una vez filtrados los genes, se procedió a la contruccion de matrices de diseñ
 
 <center>
 **Tabla 1: Matriz de diseño del experimento**
-```{r echo = FALSE}
+```{r echo = FALSE, message=FALSE}
 des.matrix <- model.matrix( ~ 0 + X.group., pData(filtData))
 colnames(des.matrix ) <- c("Control", "Etanol")
 des.matrix 
@@ -265,7 +267,7 @@ des.matrix
 
 <center>
 **Tabla 2: Matriz de contraste del experimento**
-```{r echo=FALSE}
+```{r echo=FALSE, message=FALSE}
 library(limma)
 cont.matrix <- makeContrasts(ControlvsEtanol = Control-Etanol, levels = des.matrix)
 cont.matrix
