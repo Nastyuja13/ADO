@@ -1,0 +1,466 @@
+---
+title: "Efecto de la exposición embriónica a etanol sobre la gastrulación en el pez zebra"
+author: "Anastasiya Onofriychuk"
+subtitle: "PEC nº1 de la asignatura Análisis de Datos Ómicos"
+date: '`r format(Sys.Date(),"%e de %B, %Y")`'
+lang: es
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Resumen
+
+# Introducción y objetivos
+
+## Presentación del estudio
+
+Los trastornos del espectro alcohólico fetal (TEAF) son un conjunto de alteraciones que suceden en el desarrollo prenatal. Se deben a la exposición de la madre al alcohol, durante el período de embarazo. 
+
+Los mecanismos moleculares de TEAF todavía no se entienden bien, lo cual genera la necesidad de estudiarlos en profundidad. Dado que los efectos del alcohol sobre la el desarrollo embrionario son difíciles de estudiar en mamíferos, en los que el feto se encuentra en el organismo materno, se exploran modelos donde se pueda realizar un estudio más directo. Uno de estos modelos potenciales es el pez zebra, *Danio rerio*. 
+
+*D. rerio* es un modelo animal muy conveniente para el caso. El embrión, externo, es fácil de estudiar y manipular. A pesar de diferencias en etapas del desarrollo con el ser humano, las redes de expresión génica del desarrollo están muy conservadas.
+
+En el estudio de Sarmah *et al.*(2020), se utilizan embriones de *D. rerio*, sometidos a condiciones de etanol, para observar la respuesta, a nivel genético, del organismo y descubrir genes que son alterados por esta causa durante la gastrulación. Básandose en este estudio, se realizará un análisis de los datos de microarrays de Sarmah *et al.*, utilizando diversas herramientas que proporciona R y Bioconductor.
+
+## Objetivos
+
+El objetivo de este estudio es encontrar genes diferencialmente expresados el los embriones del pez zembra ante una exposición a alcohol, con tal de comprender mejor los mecanismos moleculares del desarrollo de las TEAF.
+
+# Materiales y métodos
+
+A continuación, se describe el procedimiento seguido en el estudio. Cabe destacar que los pasos previos correspondientes al *wet lab* fueron realizador por Sarmah *et al.*, mientras que el análisis bioinformático es parte original de este informe.
+
+## Embriones de *D. rerio*
+
+Para la obtención de datos ómicos, se han utilizado embriones de *D. rerio*. Inicialmente mantenidos en medio de embrión, fueron separados en dos grupos a 2 hpf (horas post fecundación). El primer grupo fue mantenido en medio de embrión estándar (controles), mientras el segundo fue transferido (casos) a un medio con 100 mM de etanol (E100).
+
+## Extracción de ARN
+
+Los embriones fueron incubados hasta 4.5 hpf. En ese momento, el ARN total fue extraído de pools de 20 controles y 20 casos, con TRIzol. Se realizaron 7 experimentos independientes (14 muestras en total).
+Las muestras de ARN fueron purificadas con la columna Qiagen RNAeasy, y examinadas con Agilent Bioanalyzer RNA Nanochip.
+Dado que uno de los casos mostraba un RIN (número de integridad de ARN) bajo, esa muestra, junto a un control, fueron desechadas, por lo que el número de muestras final fue 12 (6 controles y 6 casos de exposición al alcohol).
+
+## Microarrays: hibridación y obtención de señal
+
+Las muestras fueron marcadas siguiendo el protocolo estándar de Affymetrix 3'IVT Express kit.
+A continuación, cada una de las 12 muestras fue hibridada al chip Zebrafish Genome Array, de Affymetrix, durante 17 horas, siguiendo el protocolo. Las 12 muestras fueron manipuladas conjuntamente como tanda única.
+
+Al no detectarse anomalías con un examen visual, se procedió a generar señales MAS5 con software de expresión génica de Affymetrix. Los datos obtenidos a partir de los microarrays fueron depositados en el repositorio GEO de NCBI, con el número de acceso GSE145574.
+
+## Análisis bioinformático
+
+# Análisis
+
+A continuación se expondrá y se comentará, paso a paso, el procedimiento seguido para el análisis bioinformático de los datos de microarray del pez zebra.
+
+## Datos a analizar
+
+Comenzamos descargando los datos del estudio. Los archivos de intensidades de los microarrays del estudio se han obtenido en GEO, con el número de acceso **GSE145574**.
+
+Los archivos .cel fueron importados al entorno con el paquete `oligo`.
+
+```{r warning=FALSE, message=FALSE}
+library(oligo)
+
+celFiles <- list.celfiles("./data", full.names = TRUE)
+FileName <- list.celfiles("./data", full.names = FALSE)
+```
+
+Se construyó un archivo de dianas, y se generó un objeto *ExpressionSet* a partir de los datos de los que disponemos, cambiamos los nombres de las muestras a unos más manejables.
+
+```{r warning=FALSE, message=FALSE, echo = FALSE}
+library(Biobase)
+group <- c(rep("control", 6), rep("ethanol", 6))
+shortName <- c("C1", "C2", "C3", "C4", "C5", "C6", 
+               "E1", "E2", "E3", "E4", "E5", "E6")
+
+targets <- as.data.frame(cbind(FileName, group, shortName))
+write.csv(targets, "./data/targets.csv")
+
+my.targets <- read.AnnotatedDataFrame(file.path("./data", "targets.csv"), 
+                                      header = TRUE, row.names = 1, sep = ",")
+```
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+rawData <- read.celfiles(celFiles, phenoData = my.targets)
+
+rownames(pData(rawData)) <- shortName
+colnames(rawData) <- rownames(pData(rawData))
+```
+
+A continuación, se muestra un resumen del objeto `rawdata` generado, indicando la cantidad de muestras, nombres, etc.
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+head(rawData)
+```
+
+## Preprocesado
+
+### Control de calidad
+
+Se realizó un control de calidad de los datos crudos, con tal de detectar poteciales problemas y errores. El control se realizó con el paquete `arrayQualityMetrics`.
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+library(arrayQualityMetrics)
+arrayQualityMetrics(rawData, force = TRUE)
+```
+
+El resumen de este control se puede visualizar más abajo. De manera general, las muestras no presentaban problemas de calidad, salvo C6 y E6.
+
+<center>
+![Resumen del control de calidad de los datos crudos](Image290.png){#id .class width=666 height=330px}
+**Fig. 1: Resumen del control de calidad de los datos crudos**
+</center>
+
+Si nos fijamos en el boxplot de las muestras, podemos observar que los datos varian entre las muestras, no son simétricos, y difieren en sus medias.
+
+<center>
+```{r  echo=FALSE}
+boxplot(rawData, main = "", xlab= "Muestras")
+```
+**Fig. 2: Boxplot de expresión de los datos crudos**
+</center>
+
+Si nos fijamos en un gráfico de PCA, podemos ver las muestras, de manera general, se agrupan según su condición de exposición a alcohol a lo largo del eje de PC2; aunque las muestras C3 y E6 parecen alejarse de la tendencia de su grupo.
+
+```{r warning=FALSE, message=FALSE, include=FALSE}
+library(ggplot2)
+library(ggrepel)
+plotaPCA <- function(datos, labels, factor, title, scale, colores, size = 1.5, glineas = 0.25){
+  data <- prcomp(t(datos),scale=scale)
+   # plot adjustments
+  dataDf <- data.frame(data$x)
+  Group <- factor
+  loads <- round(data$sdev^2/sum(data$sdev^2)*100,1)
+  # main plot
+  p1 <- ggplot(dataDf, aes(x=PC1, y=PC2)) +
+  theme_classic() +
+  geom_hline(yintercept = 0, color = "gray70") +
+  geom_vline(xintercept = 0, color = "gray70") +
+  geom_point(aes(color = Group), alpha = 0.55, size = 3) +
+  coord_cartesian(xlim = c(min(data$x[,1])-5,max(data$x[,1])+5)) +
+  scale_fill_discrete(name = "Group")
+  # avoiding labels superposition
+  p1 + geom_text_repel(aes(y = PC2 + 0.25, label = labels), segment.size = 0.25, size = size) + 
+  labs(x = c(paste("PC1",loads[1],"%")),y=c(paste("PC2",loads[2],"%"))) +  
+  ggtitle(paste("",title,sep=" "))+ 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values=colores)
+}
+```
+
+<center>
+```{r echo=FALSE}
+plotaPCA(exprs(rawData), labels = my.targets@data$X.shortName., 
+         factor = my.targets@data$X.group., 
+         title="", scale = FALSE, size = 3,
+         colores = c("red", "blue"))
+```
+**Fig. 3: Análisis de Componentes Principales de datos crudos del pez zebra**
+</center>
+
+### Normalización
+
+Los datos fueron normalizados con el paquete `oligo`, y se procedió a analizar su calidad de nuevo.
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+normData <- oligo::rma(rawData)
+```
+
+```{r warning=FALSE, message=FALSE, results='hide', include = FALSE}
+arrayQualityMetrics(normData, force = TRUE)
+```
+
+<center>
+![Resumen del control de calidad de los datos normalizados](QnormDAta.png){#id .class width=666 height=330px}
+**Fig. 4: Resumen del control de calidad de los datos normalizados**
+</center>
+
+Como se ve en la Figura 4, tras la normalización ninguna muestra parece presentar problemas de calidad.
+
+Si observamos el boxplot y el PCA de nuevo vemos, por un lado, que los datos de las muestras son mucho más simétricos ahora, por un lado, y que se agrupan de manera más clara según el PC2, por otro, aunque ahora la muestra C6 es la que no se agrupa adecuadamente.
+
+<center>
+```{r echo = FALSE}
+boxplot(normData, main = "", xlab= "Muestras")
+```
+
+**Fig. 5: Boxplot de expresión de los datos crudos normalizados**
+
+```{r echo = FALSE}
+plotaPCA(exprs(normData), labels = my.targets@data$X.shortName., factor = my.targets@data$X.group., 
+         title="", scale = FALSE, size = 3,
+         colores = c("red", "blue"))
+```
+
+**Fig. 6: Análisis de Componentes Principales de datos normalizados del pez zebra**
+</center>
+
+
+### Filtrado de genes menos variables
+
+A continuación, se procede al análisis propiamente dicho. Primero, para tener una idea general de los datos a los que nos enfrentamos, se han calculado las desviaciones típicas de la expresión de los genes. Con ello, podemos ver cómo se refleja la variabilidad del conjunto de genes analizado en el siguiente gráfico.
+
+<center>
+```{r echo=FALSE}
+sdevs0 <- apply(exprs(normData), 1, sd)
+sdevs <- sort(sdevs0)
+plot(1:length(sdevs), sdevs, main=" ",
+     xlab="Índice de genes (de menos a más variables)", ylab="Desviación estándar")
+abline(v=length(sdevs)*c(0.9,0.95), col = c("red", "blue"))
+```
+**Fig. 7: Distribución de la variabilidad de los genes. Percentil 90% en rojo y 95% en azul.**
+</center>
+
+Al parecer, menos del 5% de los datos presentan una variabilidad notblemente diferente al resto.
+
+Para facilitar el estudio, y evitar trabajar con esos genes que, de manera evidente, no aportan información relevante, se realizó un filtrado de los mismos, con la herramienta `genefilter`. Para ello, se han utilizado además los datos de anotación de *D. rerio* de Affymetrix, `zebrafish.db`.
+
+```{r echo=FALSE}
+library(genefilter)
+library(zebrafish.db)
+annotation(normData) <- "zebrafish.db"
+filtered <- nsFilter(normData, require.entrez = TRUE, 
+                     remove.dupEntrez = TRUE,var.filter=TRUE, 
+                     var.func=IQR, var.cutoff=0.75, 
+                     filterByQuantile=TRUE, feature.exclude = "^AFFX")
+
+filtData <- filtered$eset
+tot.rm <- filtered$filter.log[[1]]+filtered$filter.log[[2]]+filtered$filter.log[[3]]+filtered$filter.log[[4]]
+```
+
+De los `r dim(normData)[1]` *features* originalmente disponibles, `r tot.rm` han sido filtradas, quedando `r dim(normData)[1]-tot.rm` para el análisis. Estos datos fueron guardados para la siguiente fase.
+
+```{r warning=FALSE, message=FALSE, include=FALSE}
+write.csv(exprs(rawData), "./results/rawData.csv")
+write.csv(exprs(normData), "./results/normData.csv")
+write.csv(exprs(filtData), "./results/normFiltData.csv")
+save(rawData, normData, filtData, file = "./results/zebrafishExpData.Rda")
+```
+
+### Selección de genes
+
+Una vez filtrados los genes, se procedió a la contruccion de matrices de diseño y de contraste del experimento. Se trata de matrices sencillas, pues solo se estudia una comparación: grupo control contra el grupo expuesto a etanol.
+
+<center>
+**Tabla 1: Matriz de diseño del experimento**
+```{r echo = FALSE}
+des.matrix <- model.matrix( ~ 0 + X.group., pData(filtData))
+colnames(des.matrix ) <- c("Control", "Etanol")
+des.matrix 
+```
+</center>
+
+<center>
+**Tabla 2: Matriz de contraste del experimento**
+```{r echo=FALSE}
+library(limma)
+cont.matrix <- makeContrasts(ControlvsEtanol = Control-Etanol, levels = des.matrix)
+cont.matrix
+```
+</center>
+
+Con estas matrices, se pudo estimar un modelo lineal para los datos tratados, así como sus coeficientes y errores, utilizando el paquete `limma`.
+
+```{r message=FALSE, warning=FALSE, results = 'hide'}
+library(limma)
+
+modelo <- lmFit(filtData, des.matrix) #Modelo
+modelo.main <- contrasts.fit(modelo, cont.matrix) # Coeficientes/errores
+modelo.main <- eBayes(modelo.main) # Estadísticos
+```
+
+Los elementos más destacables (con menor p-value) según este modelo se pueden ver a continuación, en forma de tabla generada por `topTable` de `limma`.
+
+<center>
+**Tabla 3: Genes con el menor p-value según el modelo estimado**
+```{r echo=FALSE}
+topTabZF <- topTable(modelo.main, number = nrow(modelo.main), 
+                     coef ="ControlvsEtanol", adjust = "fdr") 
+head(topTabZF)
+```
+</center>
+
+Sin embargo, la lista sola de genes no resulta muy informativa, por lo que se procederá, a continuación, a anotar estos elementos que parecen significativos.
+
+### Anotación
+
+La tabla con los genes fue anotada, de acuerdo con la anotación que ofrece `zebrafish.db`, y guardada.
+
+```{r include=FALSE}
+annotatedTopTable <- function(topTab, anotPackage){
+  topTab <- cbind(PROBEID=rownames(topTab), topTab)
+  myProbes <- rownames(topTab)
+  thePackage <- eval(parse(text = anotPackage))
+  geneAnots <- select(thePackage, myProbes, c("SYMBOL", "ENTREZID", "GENENAME"))
+  annotatedTopTab<- merge(x=geneAnots, y=topTab, by.x="PROBEID", by.y="PROBEID")
+  return(annotatedTopTab)
+}
+```
+
+<center>
+**Tabla 4: Genes con el menor p-value según el modelo estimado, anotados**
+```{r warning=FALSE, message= FALSE, echo =FALSE}
+annotTopTabZF <- annotatedTopTable(topTabZF, anotPackage = "zebrafish.db")
+
+write.csv(annotTopTabZF, file="./results/annotTopTabZF.csv")
+
+head(annotTopTabZF)
+```
+</center>
+
+La distribución de los genes más significativos se puede visualizar en el siguiente *volcanoplot*.
+
+<center>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+geneSymbols <- select(zebrafish.db, rownames(modelo.main), c("SYMBOL"))
+SYMBOLS<- geneSymbols$SYMBOL
+volcanoplot(modelo.main, coef=1, highlight=4, names=SYMBOLS, main="")
+abline(v=c(-1,1))
+abline(h=-log10(0.1))
+```
+**Fig. 8: Genes diferencialmente expresados**
+</center>
+
+### Genes diferencialmente expresados
+
+Los genes que mostraban expresión diferencial fueron seleccionados con `decideTest` de `limma`.
+
+```{r warning=FALSE, message =FALSE}
+selectData <- decideTests(modelo.main, method="global", adjust.method="BH", p.value = 0.1, lfc= 1)
+```
+
+```{r include=FALSE}
+sum.res.rows <- apply(abs(selectData),1,sum)
+selectedGenes <- selectData[sum.res.rows!=0,] 
+print(summary(selectData))
+```
+
+```{r warning=FALSE, message =FALSE, include=FALSE}
+selectData <- decideTests(modelo.main, method="global", adjust.method="none", p.value = 0.1, lfc= 0.5)
+```
+
+```{r include=FALSE}
+sum.res.rows <- apply(abs(selectData),1,sum)
+selectedGenes <- selectData[sum.res.rows!=0,] 
+print(summary(selectData))
+```
+
+Sin embargo, aplicar el ajuste de los p-values resultada en solo 2 genes diferencialmente expresados. Por ello, se ha decidido, con tal de explorar más genes notables, de aflojar los criterios de `decideTest`: no aplicar ajuste de p-value, y escoger gener con mínimo de 0.5 fold change absoluto. Esto resulta en una cantidad total de 89 genes diferencialmente expresados entre las muestras control y etanol.
+
+### Análisis de los genes diferencialmente expresados
+
+```{r include=FALSE}
+listOfTables <- list(ControlvsEtanol = topTabZF)
+listOfSelected <- list()
+for (i in 1:length(listOfTables)){
+  # select the toptable
+  topTab <- listOfTables[[i]]
+  # select the genes to be included in the analysis
+  whichGenes<-topTab["P.Value"]<0.1
+  selectedIDs <- rownames(topTab)[whichGenes]
+  # convert the ID to Entrez
+  EntrezIDs<- select(zebrafish.db, selectedIDs, c("ENTREZID"))
+  EntrezIDs <- EntrezIDs$ENTREZID
+  listOfSelected[[i]] <- EntrezIDs
+  names(listOfSelected)[i] <- names(listOfTables)[i]
+}
+sapply(listOfSelected, length)
+
+mapped_genes2GO <- mappedkeys(org.Dr.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Dr.egPATH)
+mapped_genes <- union(mapped_genes2GO, mapped_genes2KEGG)
+```
+
+Finalmente, se hizo un análisis de significancia biológica con `GOstat`, con tal de hacer un enriquecimiento en términos GO.
+
+```{r message=FALSE, warnign=FALSE}
+library(GOstats)
+
+listOfData <- listOfSelected
+comparisonsNames <- names(listOfData)
+universe <- mapped_genes
+
+GOparams <- new("GOHyperGParams",
+               geneIds = listOfData, universeGeneIds = universe,
+               annotation = "zebrafish.db", ontology = "BP",
+               pvalueCutoff = 0.001, conditional = FALSE,
+               testDirection = "over")
+```
+
+
+# Resultados y discusión
+
+En el análisis presentado en este informe, se tratado de descubrir, al menos de manera superficial, qué genes se relacionan con el TEAF en etapas tempranas del desarrollo embrionario, y por qué están implicados.
+
+Como puede verse a continuación en el heatmap, la mayoría de los DEGs detectados parecen estar menos expresados en las muestras con exposición a etanol.
+
+<center>
+```{r echo=FALSE, message=FALSE, warning = FALSE}
+probesInHeatmap <- rownames(selectedGenes)
+HMdata <- exprs(filtData)[rownames(exprs(filtData)) %in% probesInHeatmap,]
+ 
+geneSymbols <- select(zebrafish.db, rownames(HMdata), c("SYMBOL"))
+SYMBOLS<- geneSymbols$SYMBOL
+rownames(HMdata) <- SYMBOLS
+
+
+my_palette <- colorRampPalette(c("blue", "red"))(n = 299)
+ 
+library(gplots)
+ 
+heatmap.2(HMdata, Rowv = TRUE, Colv = TRUE, dendrogram = "both",
+          main = "",
+          scale = "row", col = my_palette, sepcolor = "white",
+          sepwidth = c(0.05,0.05), cexRow = 0.5, cexCol = 0.9,
+          key = TRUE, keysize = 1.5, density.info = "histogram",
+          ColSideColors = c(rep("red",6),rep("blue",6)),
+          tracecol = NULL, srtCol = 30)
+
+GOhyper <- hyperGTest(GOparams)
+```
+**Fig. 9: Heatmap de genes diferencialmente expresados, logFC >= 0.5**
+</center>
+
+Los términos GO más enriquecidos en los DEGs considerados se pueden ver en la tabla siguiente:
+
+<center>
+**Tabla 5: Términos GO enriquecidos en los DEGs detectados**
+```{r}
+summary(GOhyper)
+```
+</center>
+
+Estos resultados requerirían un análisis más profundo, así como mayor conocimiento de los diferentes procesos que suceden durante el desarrollo embrionario.
+
+# Miscelánea
+
+## GitHub
+
+El código completo para este análisis se puede encontrar en el siguiente repositorio de GitHub: https://github.com/Nastyuja13/ADO
+
+## Herramientas utilizadas
+
+Las herramientas informáticas utilizadas en este análisis fueron:
+
+```{r echo=FALSE}
+sessionInfo()
+```
+
+
+# Bibliografía
+
+Sarmah, S., Srivastava, R., McClintick, J.N. et al. Embryonic ethanol exposure alters expression of sox2 and other early transcripts in zebrafish, producing gastrulation defects. Sci Rep 10, 3951 (2020). https://doi.org/10.1038/s41598-020-59043-x
+
