@@ -1,0 +1,589 @@
+---
+title: "Análisis de RNA-Seq de muestras de tejido tiroidal"
+subtitle: "PEC nº2 de la asignatura Análisis de Datos Ómicos"
+author: "Anastasiya Onofriychuk"
+date: '`r format(Sys.Date(),"%e de %B, %Y")`'
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Resumen
+
+En este estudio se lleva a cabo un análisis de RNA-Seq de un total de 30 muestras de tejido tiroidal, con diferente tipo de infiltración celular. Las muestras, previamente preprocesadas, se someten a un análisis de expresión diferencial de genes, tras lo cual los más significativos son enriquecidos en sus términos GO con tal de descubrir su significancia biológica.
+
+# Repositorio GitHub
+
+El código necesario para la reproducción de este estudio puede encontrarse en el siguiente repositorio GitHub:
+
+https://github.com/Nastyuja13/ADO
+
+# Introducción y objetivos
+
+Las migraciones de células desde sus tejidos de origen hasta otros puntos del organismo son conocidos como infiltraciones celulares. Las infiltraciones celulares pueden ocurrir tanto por procesos naturales, como es el caso de la infiltración inflamaoria, como por razones patológicas.
+
+En este estudio, se hará un análisis de los genes diferencialmente expresados en tejido tiroidal, comparando muestras que presentan diferente tipo de infiltración celular. Estas muestras se obtuvieron de *Genotype-Tissue Expression* (GTEx), programa que recoge datos de variantes genéticas y expresión génica de diferentes tejidos del organismo humano, a partir de muestras de múltiples individuos.
+
+El objetivo es, por tanto, descubrir qué genes se relacionan con una mayor o menor infiltración celular, y qué efecto tiene su variación de expresión.
+
+# Materiales y métodos
+
+## Materiales
+
+Los datos de RNA-Seq de tejido tiroidal fueron obtenidos de *Genotype-Tissue Expression* (GTEx) *Program*. Fueron proporcionados en dos archivos csv: *counts*, con los conteos de secuencias alineadas, y *targets*, con información sobre las muestras. 
+
+Las muestras de tejido eran de tres tipos diferentes,según el tipo de infiltración celular: *Not infiltrated tissues* (NIT), *Small focal infiltrates* (SFI) y *Extensive lymphoid infiltrates* (ELI).
+
+## Métodos
+
+El análisis de RNA-Seq se realizó mediante el uso del lenguaje R, y los diferentes paquetes de herramientas que ofrece.
+
+### Importe y visualización
+
+Primero, los datos de conteos e información de las muestras contenidos en los archivos csv proporcinados fueron importados.
+
+```{r eval=FALSE}
+# Importe de datos
+counts <- read.csv("counts.csv", sep = ";", header = TRUE)
+targets <- read.csv("targets.csv", sep = ",", header = TRUE)
+```
+
+A continuación, 3 subconjuntos de 10 muestras de cada tipo fueron seleccionados del conjunto de conteos, de manera aleatoria. Por tanto, 30 muestras en total.
+Para ello, los datos de información se dividieron en 3 grupos de acuerdo con el tipo de infiltración. Con la función `sample()`, muestras aleatorias de entre cada tipo fueron elegidas. Los nombres de estas muestras fueron extraídos, y solo las columnas de conteos con el nombre correspondiente fueron escogidas, en un objeto aparte.
+
+```{r eval=FALSE}
+# Categorías
+
+all.nit.t <- targets[targets$Group == "NIT",]
+all.sfi.t <- targets[targets$Group == "SFI",]
+all.eli.t <- targets[targets$Group == "ELI",]
+
+# Muestreo aleatorio
+set.seed(1234567) # Semilla de aleatorizacion
+
+sample_size <- 10 # Tamaño de muestra
+
+# Filas de targets a escoger
+ind.nit <- sample(seq_len(nrow(all.nit.t)), size = sample_size)
+ind.sfi <- sample(seq_len(nrow(all.sfi.t)), size = sample_size)  
+ind.eli <- sample(seq_len(nrow(all.eli.t)), size = sample_size)  
+
+#Targets escogidos
+nit.t <- all.nit.t[ind.nit, ]
+# Nombres de muestras
+smpl.nm.nit <- gsub("-", ".", nit.t$Sample_Name)
+# Conteos escogidos
+nit.c <- counts[, smpl.nm.nit]
+
+sfi.t <- all.sfi.t[ind.sfi, ]
+smpl.nm.sfi <- gsub("-", ".", sfi.t$Sample_Name)
+sfi.c <- counts[, smpl.nm.sfi]
+
+eli.t <- all.eli.t[ind.eli, ]
+smpl.nm.eli <- gsub("-", ".", eli.t$Sample_Name)
+eli.c <- counts[, smpl.nm.eli]
+
+# Unificacion de counts en un data frame
+
+samples <- cbind(nit.c, sfi.c, eli.c)
+samples.info <- rbind(nit.t, sfi.t, eli.t)
+rownames(samples) <- substr(counts$X, 1, 15)
+colnames(samples)[1:sample_size] <- paste0("NIT", 1:sample_size)
+colnames(samples)[(sample_size+1):(sample_size*2)] <- paste0("SFI", 1:sample_size)
+colnames(samples)[(sample_size*2+1):(sample_size*3)] <- paste0("ELI", 1:sample_size)
+```
+
+Una vez seleccionadas las 30 muestras aleatorias, los datos fueron visualizados mediante gráficas *boxplot*, *heatmap* y MDS, con previa transformación logarítmica.
+
+```{r eval=FALSE}
+# Transformacion
+
+trans.samples <- log2(samples + 1)
+```
+
+### Procesamiento y análisis de expresión diferencial
+
+Para mejorar la calidad del análisis, se aplicó un filtro a los genes de las muestras antes de realizar el análisis. Solo se consideraron los genes que tenían al menos el valor 1 de conteo entre todas sus muestras.
+
+```{r eval=FALSE}
+# Filtro
+
+keep <- rowSums(samples) > 0
+filt.samples <- samples[keep,]
+```
+
+Tras el filtro, los conteos se convirtieron en un objeto `DGEList`, apto para un análisis diferencial con `edgeR`.
+
+```{r eval=FALSE}
+difexp <- DGEList(counts = filt.samples, group = samples.info$Group)
+```
+
+Tras eso, los conteos de los genes restantes fueron normalizados. Para ello, se utilizó la función `calcNormFactors()`, de `edgeR`. El método de normalización utilizado fue el TMM (*Trimmed Mean of M-values*), que asume que la mayoría de los genes de las muestras no estará diferencialmente expresada.
+
+```{r eval=FALSE}
+difexp <- calcNormFactors(difexp, method = "TMM")
+```
+
+A continuación, se estimaron los parámetros de dispersión, con `estimateCommonDisp()` y `estimateTagwiseDisp()` de `edgeR`.
+
+```{r eval=FALSE}
+difexp <- estimateCommonDisp(difexp)
+
+difexp <- estimateTagwiseDisp(difexp)
+```
+
+Finalmente, se aplicó un test exacto a los datos. Se realizaron tres comparaciones: NIT~SFI, NIT~ELI y SFI~ELI. Los genes diferencialmente expresados (los más significativos según el análisis estadístico, es decir, aquellos con un p-value ajustado menor a 0.05) fueron guardados para el análisis de significancia biológica posterior.
+
+```{r eval=FALSE}
+et <- exactTest(difexp, pair = c("NIT", "SFI"))
+
+deg.nit.sfi <- topTags(et, n=nrow(difexp$counts), p.value = 0.05)
+```
+
+### Análisis de significancia biológica
+
+Para el análisis de significancia biológica, se realizó un análisis de términos GO enriquecidos en los genes diferencialmente expresados de cada comparación. Para ello, se utilizó la anotación de *Homo sapiens* `org.Hs.eg.db` y los paquetes `biomaRt` (para obtener los identificadores ENTREZ de los genes) y `GOstats` (para hacer el propio análisis de enriquecimiento).
+
+```{r eval=FALSE}
+# Obtención de IDs ENTREZ para todos los genes analizados
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+entrez <-  getBM(attributes = c("ensembl_gene_id", "entrezgene_id"), mart = human)
+
+universe0 <- rownames(difexp$counts)
+universe <- entrez[entrez$ensembl_gene_id %in% universe0, 2]
+universe <- as.character(universe[!is.na(universe)])
+
+# Obtención de IDs ENTREZ para los DEGs
+listOfData0 <- rownames(data)
+listOfData <- entrez[entrez$ensembl_gene_id %in% listOfData0, 2]
+listOfData <- as.character(listOfData[!is.na(listOfData)])
+
+# Enriquecimiento en terminos GO
+GOparams <- new("GOHyperGParams",
+               geneIds = listOfData, universeGeneIds = universe,
+               annotation = "org.Hs.eg.db", ontology = "BP",
+               pvalueCutoff = 0.001, conditional = FALSE,
+               testDirection = "over")
+GOhyper <- hyperGTest(GOparams)
+```
+
+# Resultados y discusión
+
+## Descripción de los datos
+
+Los datos fueron importados a R desde los archivos csv.
+
+```{r message=FALSE, warning=FALSE}
+# Importe de datos
+counts <- read.csv("counts.csv", sep = ";", header = TRUE)
+targets <- read.csv("targets.csv", sep = ",", header = TRUE)
+```
+
+```{r include=FALSE}
+aa <- dim(counts)
+bb <- dim(targets)
+```
+
+El archivo de conteos contenía información acerca de `r bb[1]` muestras y `r aa[2]` genes.
+
+<center> **Tabla 1: Primeras entradas del archivo counts.csv**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+head(counts[,c(1:5)])
+```
+</center>
+
+El archivo de *targets*, a su vez, contenía información acerca de esas `r bb[1]` muestras.
+
+<center> **Tabla 2: Primeras entradas del archivo targets.csv**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+head(targets)
+```
+</center>
+
+```{r include=FALSE}
+# Categorías
+
+all.nit.t <- targets[targets$Group == "NIT",]
+all.sfi.t <- targets[targets$Group == "SFI",]
+all.eli.t <- targets[targets$Group == "ELI",]
+```
+
+```{r include = FALSE}
+# Muestreo aleatorio
+set.seed(1234567) # Semilla de aleatorizacion
+
+sample_size <- 10
+
+ind.nit <- sample(seq_len(nrow(all.nit.t)), size = sample_size)
+ind.sfi <- sample(seq_len(nrow(all.sfi.t)), size = sample_size)  
+ind.eli <- sample(seq_len(nrow(all.eli.t)), size = sample_size)  
+
+nit.t <- all.nit.t[ind.nit, ]
+smpl.nm.nit <- gsub("-", ".", nit.t$Sample_Name)
+nit.c <- counts[, smpl.nm.nit]
+
+sfi.t <- all.sfi.t[ind.sfi, ]
+smpl.nm.sfi <- gsub("-", ".", sfi.t$Sample_Name)
+sfi.c <- counts[, smpl.nm.sfi]
+
+eli.t <- all.eli.t[ind.eli, ]
+smpl.nm.eli <- gsub("-", ".", eli.t$Sample_Name)
+eli.c <- counts[, smpl.nm.eli]
+
+# Unificacion de counts en un data frame
+
+samples <- cbind(nit.c, sfi.c, eli.c)
+samples.info <- rbind(nit.t, sfi.t, eli.t)
+rownames(samples) <- substr(counts$X, 1, 15)
+colnames(samples)[1:sample_size] <- paste0("NIT", 1:sample_size)
+colnames(samples)[(sample_size+1):(sample_size*2)] <- paste0("SFI", 1:sample_size)
+colnames(samples)[(sample_size*2+1):(sample_size*3)] <- paste0("ELI", 1:sample_size)
+```
+
+Se seleccionaron `r dim(samples)[2]` muestras, 10 de cada tipo, de manera aleatoria:
+
+<center> **Tabla 3: Algunas de las muestras elegidas aleatoriamente.**
+```{r echo=FALSE}
+head(samples)
+```
+</center>
+
+Al observar las muestras de manera general en un boxplot, puede verse que todas tienen una forma similar, aunque medias ligeramente diferentes. Las medias de las muestras NIT y SFI se parecen más entre sí.
+
+<center>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Transformacion
+trans.samples <- log2(samples + 1)
+
+# Calidad
+
+boxplot(trans.samples, 
+        names = c(rep("NIT", 10), 
+                  rep("SFI", 10), 
+                  rep("ELI", 10)), 
+        col= c(rep("tomato", 10), 
+               rep("cornflowerblue", 10), 
+               rep("green", 10)),
+        xlab = "Muestras",
+        ylab = "Conteo")
+
+#library(mixOmics)
+#library(RColorBrewer)
+#library(limma)
+
+#mat.dist <- trans.samples
+#mat.dist <- as.matrix(dist(t(mat.dist)))
+#mat.dist <- mat.dist/max(mat.dist)
+#hmcol <- colorRampPalette(brewer.pal(9, "GnBu"))(16)
+#cim(mat = mat.dist, color = rev(hmcol), symkey = FALSE, margins = c(3, 3))
+```
+
+**Figura 1: Boxplot de las muestras**
+</center>
+
+Si se representan con un gráfico MDS, puede verse de nuevo que las muestras NIT y SFI se parecen más entre sí. Lo mismo muestra el *heatmap*, aunque da la impresión de que las muestras analizadas son realmente bastante similares entre sí.
+
+<center>
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+library(limma)
+
+plotMDS(trans.samples, labels = samples.info$shortname,
+        col = c("darkgreen","blue","red")[factor(samples.info$Group)])
+```
+
+**Figura 2: MDS de las muestras**
+</center>
+
+<center>
+![Heatmap](test.jpeg){#id .class width=600 height=600px}
+
+**Figura 3: Heatmap de las muestras analizadas**
+</center>
+
+## Análisis de expresión diferencial y de significancia biológica
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Filtro
+
+keep <- rowSums(samples) > 0
+filt.samples <- samples[keep,]
+
+cc <- dim(samples)[1]
+dd <- dim(filt.samples)[1]
+```
+
+El filtraje de los datos (eliminación de genes con conteos iguales a 0) varía considerablemente la cantidad de genes en la muestra: de los `r cc` genes considerados inicialmente, solo `r dd` permanecen para el análisis.
+
+La normalización de los conteos deja una estructura de los datos bastante similar a como era originalmente.
+
+<center>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Normalizacion
+
+library(limma)
+library(edgeR)
+
+difexp <- DGEList(counts = filt.samples, group = samples.info$Group)
+
+difexp <- calcNormFactors(difexp, method = "TMM")
+
+boxplot(log2(difexp$counts+1),
+        col= c(rep("tomato", 10), 
+               rep("cornflowerblue", 10), 
+               rep("green", 10)),
+        xlab = "Muestras",
+        ylab = "Conteo")
+```
+
+**Figura 4: Boxplot de las muestras filtradas y normalizadas**
+</center>
+
+<center>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+plotMDS(log2(difexp$counts+1), labels = samples.info$shortname,
+        col = c("darkgreen","blue", "red")[factor(samples.info$Group)])
+```
+
+**Figura 5: Gráfica MDS de las muestras filtradas y normalizadas**
+</center>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#Factores de dispersión
+difexp <- estimateCommonDisp(difexp)
+
+difexp <- estimateTagwiseDisp(difexp)
+```
+
+A continuación, se tratan por separado las 3 comparaciones del estudio.
+
+```{r include=FALSE}
+library(biomaRt)
+library(org.Hs.eg.db)
+library(GOstats)
+
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+entrez <-  getBM(attributes = c("ensembl_gene_id", "entrezgene_id"), mart=human)
+
+universe0 <- rownames(difexp$counts)
+
+universe <- entrez[entrez$ensembl_gene_id %in% universe0, 2]
+universe <- as.character(universe[!is.na(universe)])
+```
+
+### Comparativa de los grupos NIT ~ SFI
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Comparación NIT SFI
+
+et <- exactTest(difexp, pair = c("NIT", "SFI"))
+
+## Extract results from edgeR analysis
+
+deg.nit.sfi <- topTags(et, n=nrow(difexp$counts), p.value = 0.05)
+
+aaa1 <- length(rownames(deg.nit.sfi))
+```
+
+En el caso de la comparación de los grupos NIT y SFI, el análisis únicamente ha detectado `r aaa1` genes diferencialmente expresados.
+
+<center> **Tabla 4: DEGs detectados en la comparación NIT~SFI.**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+deg.nit.sfi
+```
+</center>
+
+La búsqueda de sus IDs de Ensembl revela que se trata, en realidad, de dos pseudogenes.
+
+Aunque la poca cantidad de DEGs detectada podría ser indicion en un error en el procedimineto, también es cierto que pocos DEGs era un resultado esperado para esta comparación, ya que las muestras NIT y SFI se parecían bastante entre sí y sus datos se agrupaban.
+
+### Comparativa de los grupos NIT ~ ELI
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Comparación NIT ELI
+
+et <- exactTest(difexp, pair = c("NIT", "ELI"))
+
+deg.nit.eli <- topTags(et, n=nrow(difexp$counts), p.value = 0.05)
+
+listOfData0 <- rownames(deg.nit.eli)
+listOfData <- entrez[entrez$ensembl_gene_id %in% listOfData0, 2]
+listOfData <- as.character(listOfData[!is.na(listOfData)])
+
+GOparams <- new("GOHyperGParams",
+               geneIds = listOfData, universeGeneIds = universe,
+               annotation = "org.Hs.eg.db", ontology = "BP",
+               pvalueCutoff = 0.001, conditional = FALSE,
+               testDirection = "over")
+
+GOhyper.nit.eli <- hyperGTest(GOparams)
+
+aaa2 <- length(rownames(deg.nit.eli))
+```
+
+Si se comparan los grupos NIT y ELI, el panorama que se obtiene es bastante diferente: el análisis detecta un total de `r aaa2` DEGs. 
+
+<center>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+tab <- data.frame(logFC = deg.nit.eli$table[, 1], negLogPval = -log10(deg.nit.eli$table[, 3]))
+
+par(mar = c(5, 4, 4, 4))
+plot(tab, pch = 16, cex = 0.6, xlab = expression(log[2]~fold~change), ylab = expression(-log[10]~pvalue))
+
+lfc <- 2
+pval <- 0.01
+## Selecting interest genes
+signGenes <- (abs(tab$logFC) > lfc & tab$negLogPval > -log10(pval))
+## Identifying the selected genes
+points(tab[signGenes, ], pch = 16, cex = 0.8, col = "red")
+abline(h = -log10(pval), col = "green3", lty = 2)
+abline(v = c(-lfc, lfc), col = "blue", lty = 2)
+mtext(paste("pval =", pval), side = 4, at = -log10(pval), cex = 0.8, line = 0.5, las = 1)
+mtext(c(paste("-", lfc, "fold"), paste("+", lfc, "fold")), side = 3, at = c(-lfc, lfc),
+cex = 0.8, line = 0.5)
+```
+
+**Figura 6: Volcano plot del análisis de expresión diferencial de los grupos NIT y ELI.**
+</center>
+
+<center>
+![Heatmap](test1.jpeg){#id .class width=600 height=600px}
+
+**Figura 7: Heatmap de los DEGs de los grupos NIT y ELI.**
+</center>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#library(DESeq2)
+
+#rld <- rlog(difexp$counts[rownames(deg.nit.eli), c(1:10, 21:30)], blind = FALSE)
+
+#library(mixOmics)
+#library(RColorBrewer)
+#library(limma)
+
+#cim(t(rld),xlab = "Genes", ylab = "Samples",
+    #color = colorRampPalette(brewer.pal(9, "Blues"))(255), symkey = FALSE, lhei = c(1, 3), 
+    #save = "jpeg", name.save = "test1")
+```
+
+A continuación se muestran los 15 términos GO más relevantes:
+
+<center> **Tabla 5: Términos GO más relevantes en la comparación NIT~ELI.**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+head(summary(GOhyper.nit.eli)[, c("GOBPID","Pvalue", "Term")], 15)
+```
+</center>
+
+Como puede verse, la mayoría de los términos están relacionados con el sistema inmunitario y la regulación de sus células.
+
+### Comparativa de los grupos SFI ~ ELI
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Comparación SFI ELI
+
+et <- exactTest(difexp, pair = c("SFI", "ELI"))
+
+deg.sfi.eli <- topTags(et, n=nrow(difexp$counts), p.value = 0.05)
+
+listOfData0 <- rownames(deg.sfi.eli)
+listOfData <- entrez[entrez$ensembl_gene_id %in% listOfData0, 2]
+listOfData <- as.character(listOfData[!is.na(listOfData)])
+
+GOparams <- new("GOHyperGParams",
+               geneIds = listOfData, universeGeneIds = universe,
+               annotation = "org.Hs.eg.db", ontology = "BP",
+               pvalueCutoff = 0.001, conditional = FALSE,
+               testDirection = "over")
+
+GOhyper.sfi.eli <- hyperGTest(GOparams)
+
+aaa3 <- length(rownames(deg.sfi.eli))
+```
+
+La comparación de los grupos SFI y ELI es similar a la de NIT y ELI. Se detectan unos `r aaa3` genes diferencialmente expresados, cerca de de la mitad de la comparación anterior.
+
+<center>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+tab <- data.frame(logFC = deg.sfi.eli$table[, 1], negLogPval = -log10(deg.sfi.eli$table[, 3]))
+
+par(mar = c(5, 4, 4, 4))
+plot(tab, pch = 16, cex = 0.6, xlab = expression(log[2]~fold~change), ylab = expression(-log[10]~pvalue))
+
+lfc <- 2
+pval <- 0.01
+## Selecting interest genes
+signGenes <- (abs(tab$logFC) > lfc & tab$negLogPval > -log10(pval))
+## Identifying the selected genes
+points(tab[signGenes, ], pch = 16, cex = 0.8, col = "red")
+abline(h = -log10(pval), col = "green3", lty = 2)
+abline(v = c(-lfc, lfc), col = "blue", lty = 2)
+mtext(paste("pval =", pval), side = 4, at = -log10(pval), cex = 0.8, line = 0.5, las = 1)
+mtext(c(paste("-", lfc, "fold"), paste("+", lfc, "fold")), side = 3, at = c(-lfc, lfc),
+cex = 0.8, line = 0.5)
+```
+
+**Figura 8: Volcano plot del análisis de expresión diferencial de los grupos SFI y ELI.**
+</center>
+
+<center>
+![Heatmap](test2.jpeg){#id .class width=600 height=600px}
+
+**Figura 9: Heatmap de los DEGs de los grupos NIT y ELI.**
+</center>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# library(DESeq2)
+
+# rld <- rlog(difexp$counts[rownames(deg.sfi.eli), c(11:20, 21:30)], blind = FALSE)
+
+# library(mixOmics)
+# library(RColorBrewer)
+# library(limma)
+
+# cim(t(rld),xlab = "Genes", ylab = "Samples",
+    #color = colorRampPalette(brewer.pal(9, "Blues"))(255), symkey = FALSE, lhei = c(1, 3), 
+    #save = "jpeg", name.save = "test2")
+```
+
+Los términos GO más relevantes son, sin embargo, muy similares al caso anterior, relacionados todos con el sistema inmunitario.
+
+<center> **Tabla 6: Términos GO más relevantes en la comparación SFI~ELI.**
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+head(summary(GOhyper.sfi.eli)[, c("Pvalue", "Term")], 15)
+```
+</center>
+
+## Evaluación general
+
+De manera general, las comparaciones de los diferentes tipos de tejidos presentan resultados lógicos. Las muestras NIT y SFI, que corresponden a nula o poca infiltración, parecen ser bastante similares entre sí, por lo que prácticamente no muestran genes diferencialmente expresados entre sí. En el caso de las compraraciones de NIT y SFI con ELI (gran infiltración celular), se ve que hay una diferencia significativa en la expresión génica. Es más, los DEGs detectados en ambos casos se relacionan generalmente con el sistema inmunitario, algo natural para los casos de infiltración celular inflamatoria.
+
+Sin embargo, el caso NIT ~ SFI presenta muy pocos genes diferencialmente expresados, lo cual podría sugerir que existe algún error en el procedimiento. Otro resultado insatisfactorio del estudio son los *heatmaps*, que parecen mostrar, incluso en las comparaciones de NIT y SFI con ELI, que las muestras son bastante similares entre sí. Esto también podría deberse a errores en el procedimiento, o a que las muestras aleatorias escogidas no son las más representativas de todo el conjunto. 
+
+También podría deberse a que las muestras son, realmente, bastante parecidas. Pero, para confirmarlo, sería necesario realizar más estudios sobre el conjunto de datos trabajado.
+
+# Información de la sesión
+
+Los paquetes utilizados durante el estudio se listan a continuación:
+
+```{r}
+sessionInfo()
+```
+
+# Bibliografía
+
+Anders, S., McCarthy, D. J., Chen, Y., Okoniewski, M., Smyth, G. K., Huber, W., & Robinson, M. D. (2013). Count-based differential expression analysis of RNA sequencing data using R and Bioconductor. Nature Protocols, 8(9), 1765–1786. doi:10.1038/nprot.2013.099 
+
+González, I. (2014). Statistical analysis of RNA-Seq data. Plateforme Bioinformatique, INRA Toulouse.
+
+Ruíz de Villa, M. C. & Sánchez-Pla, A. (2020). Análisis de datos de microarrays. Universitat Oberta de Catalunya.
